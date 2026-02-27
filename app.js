@@ -264,6 +264,7 @@ function startTimer() {
     updateDisplay();
   }
 
+  unlockAudio(); // スマホのAudio制限を解除
   isRunning = true;
   isPaused = false;
   startBtn.classList.add('hidden');
@@ -302,7 +303,7 @@ function pauseTimer() {
 
 function stopAlarm() {
   if (alarmInterval) {
-    clearInterval(alarmInterval);
+    clearTimeout(alarmInterval);
     alarmInterval = null;
   }
   isAlarming = false;
@@ -340,34 +341,27 @@ function resetTimer() {
 function onTimerComplete() {
   isAlarming = true;
 
-  // 最初のセリフ
-  const firstMessage = getRandomMessage();
-  showSpeech(firstMessage, true);
-  speakMessage(firstMessage);
-
-  // キャラクターアニメーション
-  characterImg.classList.remove('happy', 'excited');
-  void characterImg.offsetWidth;
-  characterImg.classList.add('excited');
-
   // リセットボタンを「停止」表示に変更
   startBtn.classList.add('hidden');
   pauseBtn.classList.add('hidden');
   spinnerPicker.classList.add('hidden');
   resetBtn.querySelector('span').textContent = '⏹ 停止';
 
-  // 8秒ごとに新しいセリフを読み上げ続ける
-  alarmInterval = setInterval(() => {
-    if (!isAlarming) return;
-    const msg = getRandomMessage();
-    showSpeech(msg, true);
-    speakMessage(msg);
+  // 最初のセリフを再生し、チェーン再生を開始
+  playNextAlarmMessage();
+}
 
-    // キャラクターをバウンスさせる
-    characterImg.classList.remove('happy', 'excited');
-    void characterImg.offsetWidth;
-    characterImg.classList.add('excited');
-  }, 8000);
+function playNextAlarmMessage() {
+  if (!isAlarming) return;
+
+  const msg = getRandomMessage();
+  showSpeech(msg, true);
+  speakMessage(msg);
+
+  // キャラクターアニメーション
+  characterImg.classList.remove('happy', 'excited');
+  void characterImg.offsetWidth;
+  characterImg.classList.add('excited');
 }
 
 function getRandomMessage() {
@@ -376,45 +370,86 @@ function getRandomMessage() {
 
 // ============================================
 // 🎙️ 音声再生（事前生成済みMP3ファイル）
+// スマホ対応: 単一Audio要素を再利用 + endedチェーン方式
 // ============================================
-// voices/ フォルダにずんだもんの声のMP3が収録済み
-// msg_00.mp3 ~ msg_19.mp3 = メインセリフ
-// egg_00.mp3 ~ egg_04.mp3 = イースターエッグ
-
 const VOICE_FILES = {
   main: Array.from({ length: 29 }, (_, i) => `voices/msg_${String(i).padStart(2, '0')}.mp3`),
   easter: Array.from({ length: 5 }, (_, i) => `voices/egg_${String(i).padStart(2, '0')}.mp3`),
 };
 
-let currentAudio = null;
+// スマホ対応: 1つのAudio要素を使い回す（ユーザー操作で初期化）
+let sharedAudio = null;
+let audioUnlocked = false;
 
-function playVoice(fileUrl) {
-  // 再生中の音声を停止
-  if (currentAudio) {
-    currentAudio.pause();
-    currentAudio.currentTime = 0;
+function ensureAudio() {
+  if (!sharedAudio) {
+    sharedAudio = new Audio();
+    sharedAudio.preload = 'auto';
   }
-  currentAudio = new Audio(fileUrl);
-  currentAudio.play().catch(e => console.warn('音声再生エラー:', e));
+  return sharedAudio;
+}
+
+// ユーザーの最初のタップ/クリックでAudioをアンロック（スマホ必須）
+function unlockAudio() {
+  if (audioUnlocked) return;
+  const audio = ensureAudio();
+  // 無音再生でアンロック
+  audio.src = VOICE_FILES.main[0];
+  audio.volume = 0;
+  audio.play().then(() => {
+    audio.pause();
+    audio.currentTime = 0;
+    audio.volume = 1;
+    audioUnlocked = true;
+    console.log('🔊 Audio unlocked for mobile');
+  }).catch(() => { });
+}
+
+function playVoice(fileUrl, onEndCallback) {
+  const audio = ensureAudio();
+  // 前のendedリスナーを削除
+  audio.onended = null;
+  audio.pause();
+  audio.currentTime = 0;
+  audio.src = fileUrl;
+  audio.volume = 1;
+
+  // 再生終了時のコールバック（チェーン再生用）
+  if (onEndCallback) {
+    audio.onended = onEndCallback;
+  }
+
+  audio.play().catch(e => console.warn('音声再生エラー:', e));
 }
 
 function stopVoice() {
-  if (currentAudio) {
-    currentAudio.pause();
-    currentAudio.currentTime = 0;
-    currentAudio = null;
+  if (sharedAudio) {
+    sharedAudio.onended = null;
+    sharedAudio.pause();
+    sharedAudio.currentTime = 0;
   }
 }
 
-// メインのセリフ読み上げ（メッセージのインデックスに対応するMP3を再生）
+// メインのセリフ読み上げ
 function speakMessage(text) {
   const idx = funnyMessages.indexOf(text);
+  let fileUrl;
   if (idx >= 0 && idx < VOICE_FILES.main.length) {
-    playVoice(VOICE_FILES.main[idx]);
+    fileUrl = VOICE_FILES.main[idx];
   } else {
-    // イースターエッグなど、インデックスが見つからない場合はランダム再生
-    const randomFile = VOICE_FILES.main[Math.floor(Math.random() * VOICE_FILES.main.length)];
-    playVoice(randomFile);
+    fileUrl = VOICE_FILES.main[Math.floor(Math.random() * VOICE_FILES.main.length)];
+  }
+
+  // アラーム中は再生終了後に次のメッセージをチェーン再生
+  if (isAlarming) {
+    playVoice(fileUrl, () => {
+      // 2秒の間を空けてから次のセリフ
+      alarmInterval = setTimeout(() => {
+        if (isAlarming) playNextAlarmMessage();
+      }, 2000);
+    });
+  } else {
+    playVoice(fileUrl);
   }
 }
 
@@ -427,10 +462,9 @@ function speakEasterEgg(index) {
 
 // 音声ファイルのプリロード
 function preloadVoices() {
+  // モバイル対応: fetchで先読みだけしてキャッシュに入れる
   [...VOICE_FILES.main, ...VOICE_FILES.easter].forEach(url => {
-    const audio = new Audio();
-    audio.preload = 'auto';
-    audio.src = url;
+    fetch(url).catch(() => { });
   });
   console.log('🎙️ ずんだもんの音声ファイルをプリロード中...');
 }
