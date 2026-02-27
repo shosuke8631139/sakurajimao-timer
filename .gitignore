@@ -1,0 +1,7 @@
+# 開発用ファイル（公開不要）
+generate_voices.py
+*.bat
+
+# システムファイル
+Thumbs.db
+.DS_Store
